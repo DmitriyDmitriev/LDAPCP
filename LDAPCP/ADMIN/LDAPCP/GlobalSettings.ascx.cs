@@ -328,7 +328,7 @@ namespace ldapcp.ControlTemplates
                 deSearch.SearchRoot = de;
                 deSearch.FindOne();
                 this.LabelTestLdapConnectionOK.Text = Constants.TextConnectionSuccessful;
-                ResolveNetBiosDomainName(de, TxtLdapUsername.Text, TxtLdapPassword.Text, authNTypes);
+                RequestInformation.ResolveNetBiosDomainName(de, TxtLdapUsername.Text, TxtLdapPassword.Text, authNTypes);
             }
             catch (Exception ex)
             {
@@ -360,7 +360,7 @@ namespace ldapcp.ControlTemplates
             {
                 AuthenticationTypes authNTypes = GetSelectedAuthenticationTypes(false);
                 de = new DirectoryEntry(this.TxtLdapConnectionString.Text, this.TxtLdapUsername.Text, this.TxtLdapPassword.Text, authNTypes);
-                results = ResolveNetBiosDomainName(de, TxtLdapUsername.Text, TxtLdapPassword.Text, authNTypes);
+                results = RequestInformation.ResolveNetBiosDomainName(de, TxtLdapUsername.Text, TxtLdapPassword.Text, authNTypes);
             }
             catch (Exception ex)
             {
@@ -375,56 +375,7 @@ namespace ldapcp.ControlTemplates
             return results;
         }
 
-        protected List<string> ResolveNetBiosDomainName(DirectoryEntry directoryEntry, string username, string password, AuthenticationTypes authenticationType)
-        {
-            var netbiosDomainNames = new List<string>();
-            var distinguishedName = String.Empty;
-
-            DirectorySearcher searcher = new DirectorySearcher();
-            try
-            {
-                // TODO: LDAP connection string can be LDAPS as well
-                var directoryPath = directoryEntry.Path;
-                var provider = directoryPath.Split(new[] { @"://" }, StringSplitOptions.None)[0];
-                var directory = directoryPath.Split(new[] { @"://" }, StringSplitOptions.None)[1];
-                var dnsDomainName = string.Empty;
-
-                dnsDomainName = RequestInformation.ResolveDomainFromDirectoryPath(directory);
-
-                searcher = RequestInformation.ResolveRootDirectorySearcher(directoryEntry, distinguishedName, provider, dnsDomainName, username, password, authenticationType);
-                searcher.SearchScope = SearchScope.OneLevel;
-                searcher.PropertiesToLoad.Add("netbiosname");
-                searcher.Filter = "netBIOSName=*";
-                SearchResultCollection results = null;
-
-                results = searcher.FindAll();
-
-                if (results.Count > 0)
-                {
-                    foreach (SearchResult res in results)
-                    {
-                        var netbiosDomainName = res.Properties["netbiosname"][0].ToString();
-                        if (!netbiosDomainNames.Contains(netbiosDomainName))
-                        {
-                            netbiosDomainNames.Add(netbiosDomainName);
-                        }
-                    }
-                }
-
-                LabelTestLdapConnectionOK.Text += String.Format("<br>Resolved NetBios Domain Name/s: {0}<br>", String.Join("<br>", netbiosDomainNames.Select(x => x).ToArray()));
-            }
-            catch (Exception ex)
-            {
-                LdapcpLogging.LogException(LDAPCP._ProviderInternalName, "in ResolveNetBiosDomainName", LdapcpLogging.Categories.Configuration, ex);
-                LabelErrorTestLdapConnection.Text = String.Format(Constants.TextErrorNetBiosDomainName, ex.Message);
-            }
-            finally
-            {
-                searcher.Dispose();
-            }
-
-            return netbiosDomainNames;
-        }
+        
 
         protected void grdLDAPConnections_RowDeleting(object sender, GridViewDeleteEventArgs e)
         {
