@@ -29,15 +29,7 @@ namespace ldapcp
         string AugmentationClaimTypeProp { get; set; }
     }
 
-    public class Constants
-    {
-        public const string LDAPCPCONFIG_ID = "5D306A02-A262-48AC-8C44-BDB927620227";
-        public const string LDAPCPCONFIG_NAME = "LdapcpConfig";
-        public const string LDAPCPCONFIG_TOKENDOMAINNAME = "{domain}";
-        public const string LDAPCPCONFIG_TOKENDOMAINFQDN = "{fqdn}";
-        public const int LDAPCPCONFIG_TIMEOUT = 10;
-    }
-
+    
     public class LDAPCPConfig : SPPersistedObject, ILDAPCPConfiguration
     {
         public List<LDAPConnection> LDAPConnectionsProp
@@ -561,6 +553,9 @@ namespace ldapcp
         [Persisted]
         public string Metadata;
 
+        [Persisted]
+        public List<string> ResolvedNetBiosDomainNames;
+
         /// <summary>
         /// Specifies the types of authentication
         /// http://msdn.microsoft.com/en-us/library/system.directoryservices.authenticationtypes(v=vs.110).aspx
@@ -595,6 +590,7 @@ namespace ldapcp
                 AuthenticationTypes = this.AuthenticationTypes,
                 UserServerDirectoryEntry = this.UserServerDirectoryEntry,
                 AugmentationEnabled = this.AugmentationEnabled,
+                ResolvedNetBiosDomainNames = this.ResolvedNetBiosDomainNames
             };
             return copy;
         }
@@ -806,6 +802,135 @@ namespace ldapcp
             if (directory.Properties.Contains("name")) domainName = directory.Properties["name"].Value.ToString();
             else if (directory.Properties.Contains("cn")) domainName = directory.Properties["cn"].Value.ToString(); // Tivoli sets domain name in cn property (property name does not exist)
         }
+
+        public static DirectorySearcher ResolveRootDirectorySearcher(DirectoryEntry directoryEntry, string distinguishedName, string provider, string dnsDomainName, string username, string password, AuthenticationTypes authenticationType)
+        {
+            DirectoryEntry searchRoot = null;
+
+            if (directoryEntry.Properties["distinguishedName"].Value != null)
+            {
+                distinguishedName = directoryEntry.Properties["distinguishedName"].Value.ToString();
+            }
+
+            if (distinguishedName.ToUpper().Contains("OU="))
+            {
+                // distinguished name contains OU (Organizational Units), so we need to parse to only have DC (Domain Components) elements in our DirectoryEntry path
+                var domainComponents = ResolveDnsDomainName(distinguishedName).Split('.');
+                distinguishedName = string.Empty;
+                var componentCount = 1;
+                foreach (var component in domainComponents)
+                {
+                    distinguishedName += "DC=" + component + (componentCount < domainComponents.Length ? "," : "");
+                    componentCount++;
+                }
+            }
+
+            // Every AD forest does have Configuration Node. Here is how we target it e.g. LDAP://contoso.com/cn=Partitions,cn=Configuration,dn=contoso,dn=com
+            searchRoot = new DirectoryEntry(String.Format("{0}://{1}/cn=Partitions,cn=Configuration,{2}", provider, dnsDomainName, distinguishedName), username, password, authenticationType);
+
+            var searcher = new DirectorySearcher(searchRoot);
+            return searcher;
+        }
+
+        public static string ResolveDomainFromDirectoryPath(string directory)
+        {
+            var dnsDomainName = String.Empty;
+
+            if (directory.Contains("/"))
+            {
+                var domainConfiguration = directory.Split('/')[0];
+                // example for validating connection string similar to following: <domain>/ou=<some_value>,ou=<some_value>,dc=<subdomain>,dc=<domain>,dc=<ch>
+                if (!IsValidDomain(domainConfiguration) && (domainConfiguration.Contains("DC") || (domainConfiguration.Contains("dc"))))
+                {
+                    // it is not a domain name, resolve all DC (Domain Component) parameters as a valid domain and ignore all the rest
+                    dnsDomainName = ResolveDnsDomainName(domainConfiguration);
+                }
+                else
+                {
+                    // it is valid domain name, extract it
+                    dnsDomainName = domainConfiguration;
+                }
+            }
+            else
+            {
+                if (!IsValidDomain(directory))
+                {
+                    // it is not a domain name, resolve all DC (Domain Component) parameters as a valid domain and ignore all the rest
+                    dnsDomainName = ResolveDnsDomainName(directory);
+                }
+                else
+                {
+                    // it is valid domain name, extract it
+                    dnsDomainName = directory;
+                }
+            }
+            return dnsDomainName;
+        }
+
+        public static bool IsValidDomain(string directoryPath)
+        {
+            if (Regex.IsMatch(directoryPath, @" # Rev:2013-03-26
+                      # Match DNS host domain having one or more subdomains.
+                      # Top level domain subset taken from IANA.ORG. See:
+                      # http://data.iana.org/TLD/tlds-alpha-by-domain.txt
+                      ^                  # Anchor to start of string.
+                      (?!.{256})         # Whole domain must be 255 or less.
+                      (?:                # Group for one or more sub-domains.
+                        [a-z0-9]         # Either subdomain length from 2-63.
+                        [a-z0-9-]{0,61}  # Middle part may have dashes.
+                        [a-z0-9]         # Starts and ends with alphanum.
+                        \.               # Dot separates subdomains.
+                      | [a-z0-9]         # or subdomain length == 1 char.
+                        \.               # Dot separates subdomains.
+                      )+                 # One or more sub-domains.
+                      (?:                # Top level domain alternatives.
+                        [a-z]{2}         # Either any 2 char country code,
+                      | AERO|ARPA|ASIA|BIZ|CAT|COM|COOP|EDU|  # or TLD 
+                        GOV|INFO|INT|JOBS|MIL|MOBI|MUSEUM|    # from list.
+                        NAME|NET|ORG|POST|PRO|TEL|TRAVEL  # IANA.ORG
+                      )                  # End group of TLD alternatives.
+                      $                  # Anchor to end of string.",
+                RegexOptions.IgnoreCase | RegexOptions.IgnorePatternWhitespace))
+            {
+                return true;
+            }
+            return false;
+        }
+
+        private static string ResolveDnsDomainName(string configuration)
+        {
+            string pattern = @"(s*)dc=([^,]+)";
+            string output = string.Empty;
+
+            MatchCollection matches = Regex.Matches(configuration, pattern, RegexOptions.IgnoreCase);
+
+            var matchCount = 1;
+            foreach (Match match in matches)
+            {
+                output += match.Value.Split(new[] { "Dc=", "DC=", "dc=", "dC=" }, StringSplitOptions.None)[1] + (matchCount < matches.Count ? "," : "");
+                matchCount++;
+            }
+
+            if (output.Contains(","))
+            {
+                var components = output.Split(',');
+                var domain = string.Empty;
+
+                var componentCount = 1;
+                foreach (var component in components)
+                {
+                    domain += component + (componentCount < components.Length ? "." : "");
+                    componentCount++;
+                }
+
+                if (!string.IsNullOrEmpty(domain))
+                {
+                    output = domain;
+                }
+            }
+
+            return output;
+        }
     }
 
     public enum RequestType
@@ -818,6 +943,7 @@ namespace ldapcp
     public class LDAPConnectionSettings
     {
         public DirectoryEntry Directory;
+        public List<string> NetBiosDomainNames;
         public string Filter;
     }
 }

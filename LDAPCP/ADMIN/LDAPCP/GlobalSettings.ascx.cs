@@ -6,6 +6,7 @@ using System.Collections.Generic;
 using System.Data;
 using System.DirectoryServices;
 using System.Linq;
+using System.Text.RegularExpressions;
 using System.Web.UI.WebControls;
 
 namespace ldapcp.ControlTemplates
@@ -35,13 +36,6 @@ namespace ldapcp.ControlTemplates
             get { return AugmentationSection.Visible; }
             set { AugmentationSection.Visible = value; }
         }
-
-        string TextErrorNoGroupClaimType = "There is no claim type associated with an entity type 'FormsRole' or 'SecurityGroup'.";
-        string TextErrorLDAPFieldsMissing = "Some mandatory fields are missing.";
-        string TextErrorTestLdapConnection = "Unable to connect to LDAP for following reason:<br/>{0}<br/>It may be expected if w3wp process of central admin has intentionally no access to LDAP server.";
-        string TextConnectionSuccessful = "Connection successful.";
-        string TextSharePointDomain = "Connect to SharePoint domain";
-        string TextUpdateAdditionalLdapFilterOk = "LDAP filter was successfully applied to all LDAP attributes of class 'user'.";
 
         protected void Page_Load(object sender, EventArgs e)
         {
@@ -81,7 +75,7 @@ namespace ldapcp.ControlTemplates
             IEnumerable<AttributeHelper> potentialGroupClaimTypes = PersistedObject.AttributesListProp.Where(x => x.ClaimEntityType == SPClaimEntityTypes.FormsRole || x.ClaimEntityType == SPClaimEntityTypes.SecurityGroup);
             if (potentialGroupClaimTypes == null || potentialGroupClaimTypes.Count() == 0)
             {
-                LabelErrorMessage.Text = TextErrorNoGroupClaimType;
+                LabelErrorMessage.Text = Constants.TextErrorNoGroupClaimType;
                 return;
             }
 
@@ -97,7 +91,7 @@ namespace ldapcp.ControlTemplates
 
             // Initialize grid for LDAP connections
             var spDomainCoco = PersistedObject.LDAPConnectionsProp.FirstOrDefault(x => x.UserServerDirectoryEntry);
-            if (spDomainCoco != null) spDomainCoco.Path = TextSharePointDomain;
+            if (spDomainCoco != null) spDomainCoco.Path = Constants.TextSharePointDomain;
 
             GridLdapConnections.DataSource = PersistedObject.LDAPConnectionsProp;
             GridLdapConnections.DataKeyNames = new string[] { "IdProp" };
@@ -115,7 +109,7 @@ namespace ldapcp.ControlTemplates
                     {
                         ViewState["IsDefaultADConnectionCreated"] = true;
 
-                        pcb.AddRow(coco.Id, TextSharePointDomain, "Process account");
+                        pcb.AddRow(coco.Id, Constants.TextSharePointDomain, "Process account");
                     }
                     else
                     {
@@ -247,7 +241,7 @@ namespace ldapcp.ControlTemplates
                 userAttr.AdditionalLDAPFilterProp = this.TxtAdditionalUserLdapFilter.Text;
             }
             this.CommitChanges();
-            LabelUpdateAdditionalLdapFilterOk.Text = this.TextUpdateAdditionalLdapFilterOk;
+            LabelUpdateAdditionalLdapFilterOk.Text = Constants.TextUpdateAdditionalLdapFilterOk;
         }
 
         protected void BtnTestLdapConnection_Click(Object sender, EventArgs e)
@@ -276,7 +270,7 @@ namespace ldapcp.ControlTemplates
 
             if (this.RbUseCustomConnection.Checked && (this.TxtLdapConnectionString.Text == String.Empty || this.TxtLdapUsername.Text == String.Empty || this.TxtLdapPassword.Text == String.Empty))
             {
-                this.LabelErrorTestLdapConnection.Text = TextErrorLDAPFieldsMissing;
+                this.LabelErrorTestLdapConnection.Text = Constants.TextErrorLDAPFieldsMissing;
                 return;
             }
 
@@ -295,6 +289,7 @@ namespace ldapcp.ControlTemplates
                         Username = this.TxtLdapUsername.Text,
                         Password = this.TxtLdapPassword.Text,
                         AuthenticationTypes = authNType,
+                        ResolvedNetBiosDomainNames = ResolveNetBiosDomainName()
                     }
                 );
             }
@@ -320,7 +315,7 @@ namespace ldapcp.ControlTemplates
             ViewState["ForceCheckCustomLdapConnection"] = true;
             if (this.TxtLdapConnectionString.Text == String.Empty || this.TxtLdapPassword.Text == String.Empty || this.TxtLdapUsername.Text == String.Empty)
             {
-                this.LabelErrorTestLdapConnection.Text = TextErrorLDAPFieldsMissing;
+                this.LabelErrorTestLdapConnection.Text = Constants.TextErrorLDAPFieldsMissing;
                 return;
             }
 
@@ -332,12 +327,13 @@ namespace ldapcp.ControlTemplates
                 de = new DirectoryEntry(this.TxtLdapConnectionString.Text, this.TxtLdapUsername.Text, this.TxtLdapPassword.Text, authNTypes);
                 deSearch.SearchRoot = de;
                 deSearch.FindOne();
-                this.LabelTestLdapConnectionOK.Text = TextConnectionSuccessful;
+                this.LabelTestLdapConnectionOK.Text = Constants.TextConnectionSuccessful;
+                ResolveNetBiosDomainName(de, TxtLdapUsername.Text, TxtLdapPassword.Text, authNTypes);
             }
             catch (Exception ex)
             {
                 LdapcpLogging.LogException(LDAPCP._ProviderInternalName, "while testing LDAP connection", LdapcpLogging.Categories.Configuration, ex);
-                this.LabelErrorTestLdapConnection.Text = String.Format(TextErrorTestLdapConnection, ex.Message);
+                this.LabelErrorTestLdapConnection.Text = String.Format(Constants.TextErrorTestLdapConnection, ex.Message);
             }
             finally
             {
@@ -347,6 +343,87 @@ namespace ldapcp.ControlTemplates
 
             // Required to set radio buttons of LDAP connections correctly in UI
             PopulateLdapConnectionGrid();
+        }
+
+        protected List<string> ResolveNetBiosDomainName()
+        {
+            var results = new List<string>();
+            if (TxtLdapConnectionString.Text == String.Empty || TxtLdapPassword.Text == String.Empty || TxtLdapUsername.Text == String.Empty)
+            {
+                LabelErrorTestLdapConnection.Text = Constants.TextErrorLDAPFieldsMissing;
+                return null;
+            }
+
+            DirectoryEntry de = null;
+
+            try
+            {
+                AuthenticationTypes authNTypes = GetSelectedAuthenticationTypes(false);
+                de = new DirectoryEntry(this.TxtLdapConnectionString.Text, this.TxtLdapUsername.Text, this.TxtLdapPassword.Text, authNTypes);
+                results = ResolveNetBiosDomainName(de, TxtLdapUsername.Text, TxtLdapPassword.Text, authNTypes);
+            }
+            catch (Exception ex)
+            {
+                LdapcpLogging.LogException(LDAPCP._ProviderInternalName, "while testing LDAP connection", LdapcpLogging.Categories.Configuration, ex);
+                LabelErrorTestLdapConnection.Text = String.Format(Constants.TextErrorTestLdapConnection, ex.Message);
+            }
+            finally
+            {
+                if (de != null) de.Dispose();
+            }
+
+            return results;
+        }
+
+        protected List<string> ResolveNetBiosDomainName(DirectoryEntry directoryEntry, string username, string password, AuthenticationTypes authenticationType)
+        {
+            var netbiosDomainNames = new List<string>();
+            var distinguishedName = String.Empty;
+
+            DirectorySearcher searcher = new DirectorySearcher();
+            try
+            {
+                // TODO: LDAP connection string can be LDAPS as well
+                var directoryPath = directoryEntry.Path;
+                var provider = directoryPath.Split(new[] { @"://" }, StringSplitOptions.None)[0];
+                var directory = directoryPath.Split(new[] { @"://" }, StringSplitOptions.None)[1];
+                var dnsDomainName = string.Empty;
+
+                dnsDomainName = RequestInformation.ResolveDomainFromDirectoryPath(directory);
+
+                searcher = RequestInformation.ResolveRootDirectorySearcher(directoryEntry, distinguishedName, provider, dnsDomainName, username, password, authenticationType);
+                searcher.SearchScope = SearchScope.OneLevel;
+                searcher.PropertiesToLoad.Add("netbiosname");
+                searcher.Filter = "netBIOSName=*";
+                SearchResultCollection results = null;
+
+                results = searcher.FindAll();
+
+                if (results.Count > 0)
+                {
+                    foreach (SearchResult res in results)
+                    {
+                        var netbiosDomainName = res.Properties["netbiosname"][0].ToString();
+                        if (!netbiosDomainNames.Contains(netbiosDomainName))
+                        {
+                            netbiosDomainNames.Add(netbiosDomainName);
+                        }
+                    }
+                }
+
+                LabelTestLdapConnectionOK.Text += String.Format("<br>Resolved NetBios Domain Name/s: {0}<br>", String.Join("<br>", netbiosDomainNames.Select(x => x).ToArray()));
+            }
+            catch (Exception ex)
+            {
+                LdapcpLogging.LogException(LDAPCP._ProviderInternalName, "in ResolveNetBiosDomainName", LdapcpLogging.Categories.Configuration, ex);
+                LabelErrorTestLdapConnection.Text = String.Format(Constants.TextErrorNetBiosDomainName, ex.Message);
+            }
+            finally
+            {
+                searcher.Dispose();
+            }
+
+            return netbiosDomainNames;
         }
 
         protected void grdLDAPConnections_RowDeleting(object sender, GridViewDeleteEventArgs e)
